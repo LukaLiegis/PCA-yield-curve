@@ -1,0 +1,15 @@
+
+# Tenors used in analysis
+TENORS = [1, 5, 10, 20, 30]
+TENOR_COLS = [f'EU_{t}Y' for t in TENORS]
+
+# Window sizes
+TRAINING_WINDOW = 504
+HOLDOUT_WINDOW = 126
+TEST_WINDOW = 252
+REGIME_WINDOW = 63
+
+# Strategy parameters
+MIN_SIGNAL_CONFIDENCE = 0.8
+MAX_POSITION_SIZE = 5.0
+STOP_LOSS_THRESHOLD = -0.5
