@@ -24,16 +24,17 @@ def detect_regime(yield_df: pd.DataFrame, window: int = REGIME_WINDOW) -> pd.Dat
     regimes = pd.DataFrame(index=yield_df.index, columns=['Regime'])
 
     bull_steepening = (df['2s10s_Slope'].rolling(window=window).mean() > 0) & (
-                df['EU_10Y'].rolling(window=window).mean().diff(window) < 0)
+            df['EU_10Y'].rolling(window=window).mean().diff(window) < 0)
     bull_flattening = (df['2s10s_Slope'].rolling(window=window).mean() < 0) & (
-                df['EU_10Y'].rolling(window=window).mean().diff(window) < 0)
+            df['EU_10Y'].rolling(window=window).mean().diff(window) < 0)
     bear_steepening = (df['2s10s_Slope'].rolling(window=window).mean() > 0) & (
-                df['EU_10Y'].rolling(window=window).mean().diff(window) > 0)
+            df['EU_10Y'].rolling(window=window).mean().diff(window) > 0)
     bear_flattening = (df['2s10s_Slope'].rolling(window=window).mean() < 0) & (
-                df['EU_10Y'].rolling(window=window).mean().diff(window) > 0)
+            df['EU_10Y'].rolling(window=window).mean().diff(window) > 0)
     # TODO: flattening_twist
     # TODO: steepening_twist
 
+    # Use loc instead of chained assignment
     regimes.loc[bull_steepening, 'Regime'] = 'Bull_Steepening'
     regimes.loc[bull_flattening, 'Regime'] = 'Bull_Flattening'
     regimes.loc[bear_steepening, 'Regime'] = 'Bear_Steepening'
@@ -41,7 +42,8 @@ def detect_regime(yield_df: pd.DataFrame, window: int = REGIME_WINDOW) -> pd.Dat
     # TODO: flattening_twist
     # TODO: steepening_twist
 
-    regimes['Regime'].fillna('Normal', inplace=True)
+    # Fix the chained assignment issue
+    regimes['Regime'] = regimes['Regime'].fillna('Normal')
 
     return regimes
 
@@ -56,11 +58,21 @@ def mean_reversion_tests(deviations, window: int = 126) -> pd.DataFrame:
     for col in deviations.columns:
         series = deviations[col].dropna()
         if len(series) > window:
-            adf_result = adfuller(series.values,
-                                  maxlag=int(np.ceil(np.power(len(series) / 100, 0.25))))
-            results.loc[col, 'ADF_statistic'] = adf_result[0]
-            results.loc[col, 'p-value'] = adf_result[1]
-            results.loc[col, 'Mean_Reversion_Score'] = 1 - adf_result[1]
+            # Convert to numeric to ensure clean data
+            series = pd.to_numeric(series, errors='coerce').dropna()
+            if len(series) > window:  # Check again after cleaning
+                try:
+                    adf_result = adfuller(series.values,
+                                          maxlag=int(np.ceil(np.power(len(series) / 100, 0.25))))
+                    results.loc[col, 'ADF_statistic'] = adf_result[0]
+                    results.loc[col, 'p-value'] = adf_result[1]
+                    results.loc[col, 'Mean_Reversion_Score'] = 1 - adf_result[1]
+                except Exception as e:
+                    print(f"Error in ADF test for {col}: {str(e)}")
+                    # Provide default values
+                    results.loc[col, 'ADF_statistic'] = 0
+                    results.loc[col, 'p-value'] = 0.5
+                    results.loc[col, 'Mean_Reversion_Score'] = 0.5
 
     return results
 
@@ -76,25 +88,53 @@ def estimate_half_life(
 
     for col in deviations.columns:
         for i in range(window, len(deviations)):
-            # Use AR(1) model to estimate mean reversion speed.
-            y = deviations[col].iloc[i - window:i]
-            y = y.dropna()
+            try:
+                # Extract the data for the current window
+                series_slice = deviations[col].iloc[i - window:i]
 
-            if len(y) > window // 2:
-                y_lag = y.shift(1).dropna()
-                y = y.iloc[1:]  # Align with lagged values
+                # Explicitly convert to numeric values, coercing errors to NaN
+                series_clean = pd.to_numeric(series_slice, errors='coerce')
 
-                model = sm.OLS(y, sm.add_constant(y_lag))
-                try:
-                    result = model.fit()
-                    phi = result.params[1]
+                # Drop NaN values
+                series_clean = series_clean.dropna()
 
-                    if 0 < phi < 1:
-                        half_life = -np.log(2) / np.log(phi)
-                        half_lives.loc[deviations.index[i], col] = half_life
-                    else:
-                        half_lives.loc[deviations.index[i], col] = np.nan
-                except:
+                # Skip if not enough data
+                if len(series_clean) <= window // 2:
+                    continue
+
+                # Create lagged series (shifted by 1)
+                series_lag = series_clean.shift(1)
+
+                # Drop the first value (which will be NaN due to the shift)
+                series_lag = series_lag.iloc[1:]
+                series_clean = series_clean.iloc[1:]
+
+                # Make sure both series are the same length
+                if len(series_clean) != len(series_lag):
+                    # This shouldn't happen, but just in case
+                    min_len = min(len(series_clean), len(series_lag))
+                    series_clean = series_clean.iloc[:min_len]
+                    series_lag = series_lag.iloc[:min_len]
+
+                # Skip if we don't have enough data points after cleaning
+                if len(series_clean) < 10:
+                    continue
+
+                # Fit the AR(1) model
+                X = sm.add_constant(series_lag)
+                model = sm.OLS(series_clean, X)
+                result = model.fit()
+                phi = result.params[1]
+
+                # Calculate half-life only if the AR coefficient is between 0 and 1
+                if 0 < phi < 1:
+                    half_life = -np.log(2) / np.log(phi)
+                    half_lives.loc[deviations.index[i], col] = half_life
+                else:
                     half_lives.loc[deviations.index[i], col] = np.nan
+
+            except Exception as e:
+                print(f"Error estimating half-life for {col} at index {i}: {str(e)}")
+                continue
 
     return half_lives

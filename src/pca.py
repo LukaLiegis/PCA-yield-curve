@@ -105,7 +105,7 @@ def reconstruct_yield_curve(
 
     actual_yield_df = pd.DataFrame([actual_yield.values], columns = yield_data.columns)
 
-    transformed = pca_pipeline.transform([actual_yield_df])
+    transformed = pca_pipeline.transform(actual_yield_df)
     reconstructed = pca_pipeline.inverse_transform(transformed)
 
     return pd.Series(reconstructed[0], index=yield_data.columns)
