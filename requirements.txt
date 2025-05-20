@@ -1,0 +1,8 @@
+pandas~=2.2.3
+scikit-learn~=1.6.1
+numpy~=2.2.4
+scipy~=1.15.2
+matplotlib~=3.10.1
+statsmodels~=0.14.4
+yfinance~=0.2.61
+polars~=1.27.1
