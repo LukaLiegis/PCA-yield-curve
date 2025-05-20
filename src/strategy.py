@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 from config import MIN_SIGNAL_CONFIDENCE, MAX_POSITION_SIZE, STOP_LOSS_THRESHOLD
 
 
@@ -49,6 +50,9 @@ def simulate_enhanced_trading_strategy(
     """
     Simulate trading strategy based on PCA yield curve deviations.
     """
+    # Set pandas option to avoid the warning
+    pd.set_option('future.no_silent_downcasting', True)
+
     positions = pd.DataFrame(0, index=yield_data.index, columns=yield_data.columns)
     trades = pd.DataFrame(index=yield_data.index, columns=yield_data.columns)
     unrealized_pnl = pd.DataFrame(0, index=yield_data.index, columns=yield_data.columns)
@@ -187,7 +191,14 @@ def simulate_enhanced_trading_strategy(
 
         # Update position after all trading decisions for the day
         if i > 0:
-            positions.loc[date] = positions.loc[prev_date] + trades.loc[date].fillna(0)
+            # Alternative approach to avoid fillna warning
+            trades_slice = trades.loc[date]
+            # Replace NaN with 0 using numpy where
+            trades_slice = pd.Series(
+                np.where(trades_slice.isna(), 0, trades_slice),
+                index=trades_slice.index
+            )
+            positions.loc[date] = positions.loc[prev_date] + trades_slice
 
     return {
         'positions': positions,
@@ -215,7 +226,13 @@ def calculate_transaction_costs(
     transaction_costs = pd.DataFrame(0, index=positions.index, columns=positions.columns)
 
     for col in positions.columns:
-        position_changes = positions[col].diff().fillna(0).abs()
+        # Alternative approach to handle NaN without fillna
+        position_changes = positions[col].diff()
+        position_changes = pd.Series(
+            np.where(position_changes.isna(), 0, position_changes),
+            index=position_changes.index
+        ).abs()
+
         dv01_col = f'DV01_{col.split("_")[1]}'
         transaction_costs[col] = position_changes * (bid_ask_bips[col] / 10000 / 2) * dv01[dv01_col]
 
