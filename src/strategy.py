@@ -66,12 +66,12 @@ def simulate_enhanced_trading_strategy(
         dv01,
         threshold=1.5,
         min_confidence=MIN_SIGNAL_CONFIDENCE,
-        stop_loss_threshold=STOP_LOSS_THRESHOLD
+        stop_loss_threshold=STOP_LOSS_THRESHOLD,
+        regime_data = None
 ):
     """
     Simulate trading strategy based on PCA yield curve deviations.
     """
-    # Set pandas option to avoid the warning
     pd.set_option('future.no_silent_downcasting', True)
 
     positions = pd.DataFrame(0, index=yield_data.index, columns=yield_data.columns)
@@ -79,7 +79,6 @@ def simulate_enhanced_trading_strategy(
     unrealized_pnl = pd.DataFrame(0, index=yield_data.index, columns=yield_data.columns)
     realized_pnl = pd.DataFrame(0, index=yield_data.index, columns=yield_data.columns)
 
-    # Track trade information
     active_trades = {}
     for col in yield_data.columns:
         active_trades[col] = {
@@ -91,50 +90,52 @@ def simulate_enhanced_trading_strategy(
             'half_life': 0
         }
 
+    portfolio_metrics = pd.DataFrame(
+        index = yield_data.index,
+        columns = ['total_risk', 'var_95', 'positions_count'],
+    )
+
     # Simulate day by day
     for i, date in enumerate(yield_data.index[252:], 252):  # Start after warmup period
         prev_date = yield_data.index[i - 1]
 
+        current_regime = regime_data.loc[date, 'Regime'] if regime_data is not None else 'Normal'
+
         for col in yield_data.columns:
             tenor = col.split('_')[1]
-            # Skip if we don't have all necessary data
+
             if pd.isna(z_scores.loc[date, col]) or pd.isna(dv01.loc[date, f'DV01_{tenor}']):
                 continue
 
             deviation = z_scores.loc[date, col]
 
-            # Current tenor's mean reversion confidence
             confidence = mean_reversion_stats.loc[
                 col, 'Mean_Reversion_Score'] if col in mean_reversion_stats.index else 0
 
-            # Current half-life estimate
             hl = half_lives.loc[date, col] if not pd.isna(half_lives.loc[date, col]) else 0
 
-            # Current carry/rolldown
             cr = carry_rolldown.loc[date, f'Total_{tenor}'] if not pd.isna(
                 carry_rolldown.loc[date, f'Total_{tenor}']) else 0
 
-            # Current DV01
             current_dv01 = dv01.loc[date, f'DV01_{tenor}']
 
             # 1. Check if we need to close existing position due to stop loss or target reached
             current_trade = active_trades[col]
             if current_trade['position'] != 0:
-                # Calculate current P&L in basis points
+
                 current_yield = yield_data.loc[date, col]
                 entry_yield = current_trade['entry_price']
-                pnl_bps = -current_trade['position'] * (current_yield - entry_yield)
+                pnl_bps = -current_trade['position'] * (current_yield - entry_yield) * 100
 
-                # Update unrealized P&L
                 unrealized_pnl.loc[date, col] = pnl_bps
 
-                # Check stop loss
-                if pnl_bps <= stop_loss_threshold:
-                    # Close position due to stop loss
+                position_vol = abs(current_trade['position']) * 0.5
+                dynamic_stop = -2 * position_vol * 100
+
+                if pnl_bps <= dynamic_stop:
+
                     trades.loc[date, col] = -current_trade['position']
                     realized_pnl.loc[date, col] = pnl_bps
-
-                    # Reset trade info
                     active_trades[col] = {
                         'position': 0,
                         'entry_date': None,
@@ -145,14 +146,11 @@ def simulate_enhanced_trading_strategy(
                     }
                     continue
 
-                # Check if deviation has normalized (crossed back to mean)
-                if (current_trade['position'] > 0 and deviation < 0) or \
-                        (current_trade['position'] < 0 and deviation > 0):
-                    # Close position as deviation has normalized
+                if (current_trade['position'] > 0 and deviation < 0.5) or \
+                    (current_trade['position'] < 0 and deviation > -0.5):
+
                     trades.loc[date, col] = -current_trade['position']
                     realized_pnl.loc[date, col] = pnl_bps
-
-                    # Reset trade info
                     active_trades[col] = {
                         'position': 0,
                         'entry_date': None,
@@ -163,16 +161,15 @@ def simulate_enhanced_trading_strategy(
                     }
                     continue
 
-                # Check holding period based on half-life
                 entry_date = current_trade['entry_date']
                 days_held = (yield_data.index.get_loc(date) - yield_data.index.get_loc(entry_date))
 
-                if days_held > current_trade['half_life'] * 2:  # Hold for 2x half-life
-                    # Close position due to holding period expiration
+                max_holding = current_trade['half_life'] * 2 if current_trade['half_life'] > 0 else 60
+
+                if days_held > max_holding:
+
                     trades.loc[date, col] = -current_trade['position']
                     realized_pnl.loc[date, col] = pnl_bps
-
-                    # Reset trade info
                     active_trades[col] = {
                         'position': 0,
                         'entry_date': None,
@@ -185,36 +182,40 @@ def simulate_enhanced_trading_strategy(
 
             # 2. Check for new entry signal if no position
             if active_trades[col]['position'] == 0:
-                # Strong deviation and sufficient confidence in mean reversion
-                if (abs(deviation) > threshold) and (confidence > min_confidence):
+
+                regime_thresholds = {
+                    'High_Volatility': threshold * 1.5,
+                    'Range_Bound': threshold * 0.75,
+                    'Normal': threshold,
+                }
+                current_threshold = regime_thresholds.get(current_regime, threshold)
+
+                if (abs(deviation) > current_threshold) and (confidence > min_confidence):
                     # Calculate position size
                     size = calculate_position_size(
                         deviation=deviation,
                         confidence=confidence,
                         half_life=hl if hl > 0 else 20,  # Default to 20 days if unknown
                         carry_rolldown=cr,
-                        dv01=current_dv01
+                        dv01=current_dv01,
+                        current_regime=current_regime,
                     )
 
                     if abs(size) > 0.1:  # Meaningful position size
                         # Enter new position
                         trades.loc[date, col] = size
 
-                        # Record trade information
                         active_trades[col] = {
                             'position': size,
                             'entry_date': date,
                             'entry_price': yield_data.loc[date, col],
                             'stop_loss': yield_data.loc[date, col] + (stop_loss_threshold / size),
-                            'target': yield_data.loc[date, col] - (deviation / 2),  # Target 50% reversion
-                            'half_life': hl if hl > 0 else 20  # Default to 20 days if unknown
+                            'target': yield_data.loc[date, col] - (deviation / 2),
+                            'half_life': hl if hl > 0 else 20
                         }
 
-        # Update position after all trading decisions for the day
         if i > 0:
-            # Alternative approach to avoid fillna warning
             trades_slice = trades.loc[date]
-            # Replace NaN with 0 using numpy where
             trades_slice = pd.Series(
                 np.where(trades_slice.isna(), 0, trades_slice),
                 index=trades_slice.index
@@ -225,37 +226,45 @@ def simulate_enhanced_trading_strategy(
         'positions': positions,
         'trades': trades,
         'unrealized_pnl': unrealized_pnl,
-        'realized_pnl': realized_pnl
+        'realized_pnl': realized_pnl,
+        'portfolio_metrics': portfolio_metrics,
     }
 
 
 def calculate_transaction_costs(
         positions,
-        dv01
+        dv01,
+        market_volatility = None,
 ) -> pd.DataFrame:
     """
     Calculate transaction costs based on position changes.
     """
     bid_ask_bips = {
-        'EU_1Y': 0.5,
-        'EU_5Y': 1.0,
-        'EU_10Y': 1.5,
-        'EU_20Y': 2.5,
-        'EU_30Y': 3.0,
+        'EU_1Y': 0.25,
+        'EU_5Y': 0.50,
+        'EU_10Y': 0.75,
+        'EU_20Y': 1.25,
+        'EU_30Y': 1.5,
     }
 
     transaction_costs = pd.DataFrame(0, index=positions.index, columns=positions.columns)
 
     for col in positions.columns:
-        # Alternative approach to handle NaN without fillna
         position_changes = positions[col].diff()
         position_changes = pd.Series(
             np.where(position_changes.isna(), 0, position_changes),
             index=position_changes.index
         ).abs()
 
+        if market_volatility is not None:
+            vol_adjustment = np.clip(market_volatility / market_volatility.mean(), 0.5, 2.0)
+        else:
+            vol_adjustment = 1.0
+
+        adjustment_spread = bid_ask_bips[col] * vol_adjustment
+
         dv01_col = f'DV01_{col.split("_")[1]}'
-        transaction_costs[col] = position_changes * (bid_ask_bips[col] / 10000 / 2) * dv01[dv01_col]
+        transaction_costs[col] = position_changes * (adjustment_spread / 10000 / 2) * dv01[dv01_col] * 10000
 
     return transaction_costs
 
