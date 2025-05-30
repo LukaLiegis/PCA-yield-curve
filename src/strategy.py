@@ -9,31 +9,52 @@ def calculate_position_size(
         half_life,
         carry_rolldown,
         dv01,
-        max_position: float = MAX_POSITION_SIZE
+        current_regime = 'Normal',
+        portfolio_value = 1_000_000,
+        max_position_pct: float = MAX_POSITION_SIZE
 ):
     """
-    Calculate position size based on signal and risk parameters.
+    Calculate position size based on kelly and risk limits.
     """
     signal = -deviation
 
-    if half_life > 0:
-        size_adjustment = confidence * (20 / half_life)
+    if half_life > 0 and half_life < 252:
+        expected_holding_period = min(half_life * 2, 60)
+        mean_reversion_return = abs(deviation) * (1 - 0.5 ** (expected_holding_period / half_life))
     else:
-        size_adjustment = confidence
+        mean_reversion_return = abs(deviation) * 0.5
 
-    if signal > 0 and carry_rolldown > 0:
-        carry_adjustment = 1 + min(carry_rolldown, 0.5)
-    elif signal < 0 and carry_rolldown < 0:
-        carry_adjustment = 1 + min(-carry_rolldown, 0.5)
-    else:
-        carry_adjustment = max(0.5, 1 - abs(carry_rolldown))
+    carry_daily = carry_rolldown / 252 if carry_rolldown > 0 else 0
+    total_expected_return = mean_reversion_return + carry_daily * expected_holding_period
 
-    raw_size = signal * size_adjustment * carry_adjustment
-    risk_normalized_size = raw_size / dv01 if dv01 > 0 else 0
+    volatility = 0.5
+    # TODO: make this value dependant on past data
 
-    capped_size = max(min(risk_normalized_size, max_position), -max_position)
+    kelly_fraction = total_expected_return / (volatility  ** 2)
 
-    return capped_size
+    regime_multipliers = {
+        'High_Volatility': 0.5,
+        'Range_Bound': 1.2,
+        'Normal': 1.0,
+        'Bull_Steepening': 0.8,
+        'Bear_Steepening': 0.8,
+        'Bull_Flattening': 0.9,
+        'Bear_Flattening': 0.9
+    }
+
+    regime_mult = regime_multipliers.get(current_regime, 1.0)
+
+    safe_kelly = 0.25 * kelly_fraction * regime_mult * confidence
+
+    position_value = safe_kelly * portfolio_value
+    position_dv01_units = position_value / (dv01 * 10000) if dv01 > 0 else 0
+
+    max_position_value = max_position_pct * portfolio_value
+    max_position_dv01 = max_position_value / (dv01 * 10000) if dv01 > 0 else MAX_POSITION_SIZE
+
+    final_size = np.sign(signal) * min(abs(position_dv01_units), max_position_dv01)
+
+    return final_size
 
 
 def simulate_enhanced_trading_strategy(
