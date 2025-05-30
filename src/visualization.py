@@ -195,3 +195,68 @@ def visualize_pca_reconstruction(results, output_dir='output/images/'):
     plt.tight_layout()
     plt.savefig(f'{output_dir}pca_reconstruction.png')
     plt.close()
+
+
+def visualize_regime_performance(results, output_dir='output/images/'):
+    """
+    Visualize strategy performance by regime.
+    """
+    pnl = results['total_pnl']['Total_PnL']
+    regimes = results['regime_data']['Regime']
+
+    common_dates = pnl.index.intersection(regimes.index)
+    pnl_aligned = pnl.loc[common_dates]
+    regimes_aligned = regimes.loc[common_dates]
+
+    regime_stats = {}
+    for regime in regimes_aligned.unique():
+        regime_pnl = pnl_aligned[regimes_aligned == regime]
+        if len(regime_pnl) > 0:
+            regime_stats[regime] = {
+                'count': len(regime_pnl),
+                'total_pnl': regime_pnl.sum(),
+                'avg_daily': regime_pnl.mean(),
+                'volatility': regime_pnl.std(),
+                'sharpe': regime_pnl.mean() / regime_pnl.std() * np.sqrt(252) if regime_pnl.std() > 0 else 0
+            }
+
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+
+    ax = axes[0, 0]
+    regimes_list = list(regime_stats.keys())
+    total_pnls = [regime_stats[r]['total_pnl'] for r in regimes_list]
+    colors = ['green' if p > 0 else 'red' for p in total_pnls]
+    ax.bar(regimes_list, total_pnls, color=colors)
+    ax.set_title('Total P&L by Regime')
+    ax.set_ylabel('P&L ($)')
+    plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
+
+    ax = axes[0, 1]
+    sharpes = [regime_stats[r]['sharpe'] for r in regimes_list]
+    ax.bar(regimes_list, sharpes)
+    ax.axhline(y=0, color='black', linestyle='--', alpha=0.5)
+    ax.set_title('Sharpe Ratio by Regime')
+    ax.set_ylabel('Sharpe Ratio')
+    plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
+
+    ax = axes[1, 0]
+    counts = [regime_stats[r]['count'] for r in regimes_list]
+    ax.pie(counts, labels=regimes_list, autopct='%1.1f%%')
+    ax.set_title('Time Spent in Each Regime')
+
+    ax = axes[1, 1]
+    avg_returns = [regime_stats[r]['avg_daily'] for r in regimes_list]
+    volatilities = [regime_stats[r]['volatility'] for r in regimes_list]
+    ax.scatter(volatilities, avg_returns, s=100)
+    for i, regime in enumerate(regimes_list):
+        ax.annotate(regime, (volatilities[i], avg_returns[i]),
+                    xytext=(5, 5), textcoords='offset points')
+    ax.set_xlabel('Daily Volatility')
+    ax.set_ylabel('Average Daily Return')
+    ax.set_title('Risk-Return by Regime')
+    ax.axhline(y=0, color='black', linestyle='--', alpha=0.5)
+    ax.axvline(x=0, color='black', linestyle='--', alpha=0.5)
+
+    plt.tight_layout()
+    plt.savefig(f'{output_dir}regime_performance.png')
+    plt.close()
