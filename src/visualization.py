@@ -1,6 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
+from config import TENORS
+
 
 def visualize_strategy_results(results, output_dir='output/images/'):
     """
@@ -163,3 +165,33 @@ def visualize_stress_test_results(stress_results, output_dir='output/images/'):
 
     plt.tight_layout()
     plt.savefig(f'{output_dir}stress_test_results.png')
+
+
+def visualize_pca_reconstruction(results, output_dir='output/images/'):
+
+    actual = results['yield_data']
+    reconstructed = results['deviation_results']['reconstructed_yield']
+
+    sample_dates = actual.index[::len(actual) // 5][:5]
+
+    plt.figure(figsize=(15, 10))
+
+    for i, date in enumerate(sample_dates):
+        plt.subplot(3, 2, i + 1)
+
+        tenors = TENORS
+        actual_yields = [actual.loc[date, f'EU_{t}Y'] for t in tenors]
+        recon_yields = [reconstructed.loc[date, f'EU_{t}Y'] for t in tenors]
+
+        plt.plot(tenors, actual_yields, 'bo--', label='Actual')
+        plt.plot(tenors, recon_yields, 'r^--', label='Reconstructed')
+
+        plt.xlabel('Tenor')
+        plt.ylabel('Yield')
+        plt.title(f'Yield Curve on {date.strftime("%Y-%m,-%d")}')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(f'{output_dir}pca_reconstruction.png')
+    plt.close()
