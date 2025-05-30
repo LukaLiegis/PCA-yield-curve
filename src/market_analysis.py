@@ -93,51 +93,38 @@ def estimate_half_life(
         for i in range(window, len(deviations)):
             try:
                 # Extract the data for the current window
-                series_slice = deviations[col].iloc[i - window:i]
+                series_slice = deviations[col].iloc[max(0, i - window):i]
 
-                # Explicitly convert to numeric values, coercing errors to NaN
-                series_clean = pd.to_numeric(series_slice, errors='coerce')
+                series_clean = pd.to_numeric(series_slice, errors='coerce').dropna()
 
-                # Drop NaN values
-                series_clean = series_clean.dropna()
-
-                # Skip if not enough data
-                if len(series_clean) <= window // 2:
+                if len(series_clean) < window // 2:
+                    half_lives.loc[deviations.index[i], col] = np.nan
                     continue
 
-                # Create lagged series (shifted by 1)
-                series_lag = series_clean.shift(1)
+                y = series_clean.values[1:]
+                X = series_clean.values[:-1]
 
-                # Drop the first value (which will be NaN due to the shift)
-                series_lag = series_lag.iloc[1:]
-                series_clean = series_clean.iloc[1:]
+                X_with_const = sm.add_constant(X)
 
-                # Make sure both series are the same length
-                if len(series_clean) != len(series_lag):
-                    # This shouldn't happen, but just in case
-                    min_len = min(len(series_clean), len(series_lag))
-                    series_clean = series_clean.iloc[:min_len]
-                    series_lag = series_lag.iloc[:min_len]
+                try:
+                    model = sm.OLS(y, X_with_const)
+                    results = model.fit()
 
-                # Skip if we don't have enough data points after cleaning
-                if len(series_clean) < 10:
-                    continue
+                    phi = results.params[1]
 
-                # Fit the AR(1) model
-                X = sm.add_constant(series_lag)
-                model = sm.OLS(series_clean, X)
-                result = model.fit()
-                phi = result.params[1]
+                    if 0 < phi < 1:
+                        half_life = -np.log(2) / np.log(phi)
+                        half_lives.loc[deviations.index[i], col] = min(half_life, 252)
+                    else:
+                        half_lives.loc[deviations.index[i], col] = np.nan
 
-                # Calculate half-life only if the AR coefficient is between 0 and 1
-                if 0 < phi < 1:
-                    half_life = -np.log(2) / np.log(phi)
-                    half_lives.loc[deviations.index[i], col] = half_life
-                else:
+                except Exception as e:
                     half_lives.loc[deviations.index[i], col] = np.nan
 
             except Exception as e:
-                print(f"Error estimating half-life for {col} at index {i}: {str(e)}")
+                half_lives.loc[deviations.index[i], col] = np.nan
                 continue
+
+    half_lives = half_lives.fillna(method='ffill', limit=5)
 
     return half_lives
