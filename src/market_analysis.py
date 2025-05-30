@@ -5,44 +5,47 @@ import statsmodels.api as sm
 from config import REGIME_WINDOW
 
 
-def detect_regime(yield_df: pd.DataFrame, window: int = REGIME_WINDOW) -> pd.DataFrame:
+def detect_regime(
+        yield_df: pd.DataFrame,
+        window: int = REGIME_WINDOW
+) -> pd.DataFrame:
     """
     Detect market regimes based on yield curve behavior.
     """
     df = pd.DataFrame(index=yield_df.index)
 
-    # Slope measures
     df['2s10s_Slope'] = yield_df['EU_10Y'] - yield_df['EU_1Y']
-
     df['EU_10Y'] = yield_df['EU_10Y']
 
-    # Level
-    df['Level'] = yield_df['EU_10Y']
+    df['Level'] = yield_df[['EU_1Y', 'EU_5Y', 'EU_10Y', 'EU_20Y', 'EU_30Y']].mean(axis=1)
 
-    df['Yield_Volatility'] = yield_df['EU_10Y'].rolling(window=21).std() * 100
+    df['Yield_Volatility'] = yield_df['EU_10Y'].rolling(window=21).std() * np.sqrt(252)
 
     regimes = pd.DataFrame(index=yield_df.index, columns=['Regime'])
+    regimes['Regime'] = 'Normal'
 
-    bull_steepening = (df['2s10s_Slope'].rolling(window=window).mean() > 0) & (
-            df['EU_10Y'].rolling(window=window).mean().diff(window) < 0)
-    bull_flattening = (df['2s10s_Slope'].rolling(window=window).mean() < 0) & (
-            df['EU_10Y'].rolling(window=window).mean().diff(window) < 0)
-    bear_steepening = (df['2s10s_Slope'].rolling(window=window).mean() > 0) & (
-            df['EU_10Y'].rolling(window=window).mean().diff(window) > 0)
-    bear_flattening = (df['2s10s_Slope'].rolling(window=window).mean() < 0) & (
-            df['EU_10Y'].rolling(window=window).mean().diff(window) > 0)
-    # TODO: flattening_twist
-    # TODO: steepening_twist
+    level_change = df['Level'].rolling(window=window).mean().diff(window)
+    slope_change = df['2s10s_Slope'].rolling(window=window).mean().diff(window)
 
-    # Use loc instead of chained assignment
+    bull_steepening = (level_change < -0.05) & (slope_change > 0.02)
+    bear_steepening = (level_change > 0.05) & (slope_change > 0.02)
+    bull_flattening = (level_change < -0.05) & (slope_change < -0.02)
+    bear_flattening = (level_change > 0.05) & (slope_change < -0.02)
+
+    vol_90th = df['Yield_Volatility'].rolling(window=252).quantile(0.90)
+    high_vol = df['Yield_Volatility'] > vol_90th
+
+    vol_25th = df['Yield_Volatility'].rolling(window=252).quantile(0.25)
+    range_bound = (df['Yield_Volatility'] < vol_25th) & (abs(level_change) < 0.02)
+
     regimes.loc[bull_steepening, 'Regime'] = 'Bull_Steepening'
     regimes.loc[bull_flattening, 'Regime'] = 'Bull_Flattening'
     regimes.loc[bear_steepening, 'Regime'] = 'Bear_Steepening'
     regimes.loc[bear_flattening, 'Regime'] = 'Bear_Flattening'
-    # TODO: flattening_twist
-    # TODO: steepening_twist
+    regimes.loc[range_bound, 'Regime'] = 'Range_Bound'
+    regimes.loc[high_vol, 'Regime'] = 'High_Volatility'
 
-    # Fix the chained assignment issue
+
     regimes['Regime'] = regimes['Regime'].fillna('Normal')
 
     return regimes
