@@ -1,5 +1,7 @@
 import os
 
+import pandas as pd
+
 from src.data_loader import load_yield_data, check_data_quality
 from src.risk_measures import calculate_duration, calculate_dv01, calculate_carry_and_rolldown
 from src.market_analysis import detect_regime, mean_reversion_tests, estimate_half_life
@@ -38,23 +40,32 @@ def run_enhanced_strategy():
     print("Detecting market regimes...")
     regime_data = detect_regime(yield_data)
 
+    print(f"Regime distribution:\n{regime_data['Regime'].value_counts()}")
+
     print("Performing PCA analysis...")
-    # Split into in-sample and out-of-sample periods
-    cutoff_date = yield_data.index[int(len(yield_data) * 0.7)]  # 70/30 split
+    cutoff_date = yield_data.index[int(len(yield_data) * 0.7)]
     in_sample = yield_data.loc[:cutoff_date]
     out_sample = yield_data.loc[cutoff_date:]
 
-    # Fit PCA on in-sample data
-    pca_results = perform_yield_pca(in_sample, regime_data.loc[:cutoff_date])
+    pca_results = perform_yield_pca(
+        in_sample,
+        regime_data.loc[:cutoff_date],
+        use_changes=True
+    )
 
     print("Calculating yield curve deviations...")
-    # Calculate deviations for all data (will only trade out-of-sample)
     deviation_results = calculate_deviations(yield_data, pca_results, regime_data)
     z_scores = deviation_results['z_scores']
 
     print("Testing for mean reversion...")
     mr_test = mean_reversion_tests(deviation_results['raw_deviations'])
     half_lives = estimate_half_life(deviation_results['raw_deviations'])
+
+    avg_half_lives = half_lives.mean()
+    print("Average half-lives by tenor:")
+    for col in avg_half_lives.index:
+        if not pd.isna(avg_half_lives[col]):
+            print(f"{col}: {avg_half_lives[col]:.1f} days")
 
     print("Simulating trading strategy...")
     strategy_results = simulate_enhanced_trading_strategy(
@@ -63,7 +74,8 @@ def run_enhanced_strategy():
         mr_test,
         half_lives,
         carry_rolldown,
-        dv01
+        dv01,
+        regime_data,
     )
 
     print("Calculating performance metrics...")
@@ -74,7 +86,6 @@ def run_enhanced_strategy():
         carry_rolldown
     )
 
-    # Split performance metrics by in-sample and out-of-sample
     in_sample_pnl = total_pnl.loc[:cutoff_date, 'Total_PnL']
     out_sample_pnl = total_pnl.loc[cutoff_date:, 'Total_PnL']
 
@@ -86,6 +97,16 @@ def run_enhanced_strategy():
 
     print("Running stress tests...")
     stress_results = perform_stress_test(strategy_results, yield_data, regime_data)
+
+    turnover = strategy_results['trades'].abs().sum(axis=1).sum()
+    print(f"Average daily turnover: {turnover:.2f} DV01 units")
+
+    avg_positions = (strategy_results['positions'] != 0).sum(axis=1).sum()
+    print(f"Average daily positions: {avg_positions:.2f} DV01 units")
+
+    position_concentration = strategy_results['positions'].abs().sum(axis=1)
+    max_concentration = position_concentration.max()
+    print(f"Maximum position concentration: {max_concentration:.1f} DV01 units")
 
     results = {
         'yield_data': yield_data,
@@ -99,7 +120,10 @@ def run_enhanced_strategy():
         'in_sample_metrics': in_sample_metrics,
         'out_sample_metrics': out_sample_metrics,
         'attribution': attribution,
-        'stress_results': stress_results
+        'stress_results': stress_results,
+        'turnover': turnover,
+        'avg_positions': avg_positions,
+        'max_concentration': max_concentration,
     }
 
     print("Creating visualizations...")
@@ -114,18 +138,36 @@ def print_performance_summary(results):
     """Print a summary of strategy performance."""
     print("\nIn-Sample Performance:")
     for metric, value in results['in_sample_metrics'].items():
-        print(f"{metric}: {value:.4f}")
+        if 'Ratio' in metric or 'Rate' in metric:
+            print(f"{metric}: {value:.3f}")
+        else:
+            print(f"{metric}: {value:.4f}")
 
     print("\nOut-of-Sample Performance:")
     for metric, value in results['out_sample_metrics'].items():
-        print(f"{metric}: {value:.4f}")
+        if 'Ratio' in metric or 'Rate' in metric:
+            print(f"{metric}: {value:.3f}")
+        else:
+            print(f"{metric}: {value:.4f}")
+
+    print("\nPerformance Degradation (IS vs OOS):")
+    sharpe_degradation = (
+            results['in_sample_metrics']['Sharpe_Ratio'] -
+            results['out_sample_metrics']['Sharpe_Ratio']
+    )
+    print(f"Sharpe Ratio degradation: {sharpe_degradation:.3f}")
 
     print("\nStress Test Results:")
     for scenario, result in results['stress_results'].items():
         print(f"{scenario}: {result['total_impact']:.4f}")
 
+    print("\nRisk Metrics:")
+    print(f"Average daily turnover: {results['turnover']:.2f} DV01 units")
+    print(f"Average positions: {results['avg_positions']:.1f}")
+    print(f"Max concentration: {results['max_concentration']:.1f} DV01 units")
+
     print("\nP&L Attribution by Tenor:")
-    print(results['attribution']['by_tenor'])
+    print(results['attribution']['by_tenor'].sort_values('Total_PnL', ascending=False))
 
     print("\nP&L Attribution by Component:")
     print(results['attribution']['by_component'])
