@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 
 from config import TENORS
@@ -38,8 +39,10 @@ def visualize_strategy_results(results, output_dir='output/images/'):
     plt.savefig(f'{output_dir}enhanced_strategy_pnl.png')
 
     visualize_positions_and_deviations(results, output_dir)
-
     visualize_regimes(results, output_dir)
+    visualize_pca_reconstruction(results, output_dir)
+    visualize_regime_performance(results, output_dir)
+    visualize_signal_quality(results, output_dir)
 
     return "Visualizations saved to images directory."
 
@@ -259,4 +262,61 @@ def visualize_regime_performance(results, output_dir='output/images/'):
 
     plt.tight_layout()
     plt.savefig(f'{output_dir}regime_performance.png')
+    plt.close()
+
+
+def visualize_signal_quality(results, output_dir='output/images/'):
+    """
+    Visualize the quality of trading signals.
+    """
+    z_scores = results['deviation_results']['z_scores']
+    positions = results['strategy_results']['positions']
+    pnl = results['total_pnl']['Total_PnL']
+
+    z_buckets = [(-np.inf, -3), (-3, -2), (-2, -1), (-1, 1), (1, 2), (2, 3), (3, np.inf)]
+    bucket_stats = []
+
+    for low, high in z_buckets:
+        mask = pd.Series(False, index=z_scores.index)
+        for col in z_scores.columns:
+            z_mask = (z_scores[col] > low) & (z_scores[col] <= high)
+            pos_mask = positions[col] != 0
+            mask = mask | (z_mask & pos_mask)
+
+        bucket_pnl = pnl[mask]
+        if len(bucket_pnl) > 0:
+            win_rate = (bucket_pnl > 0).sum() / len(bucket_pnl)
+            avg_pnl = bucket_pnl.mean()
+        else:
+            win_rate = 0
+            avg_pnl = 0
+
+        bucket_stats.append({
+            'range': f'{low:.0f} to {high:.0f}',
+            'count': mask.sum(),
+            'win_rate': win_rate,
+            'avg_pnl': avg_pnl
+        })
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+
+    ranges = [b['range'] for b in bucket_stats]
+    win_rates = [b['win_rate'] for b in bucket_stats]
+    ax1.bar(ranges, win_rates)
+    ax1.axhline(y=0.5, color='red', linestyle='--', label='50% Win Rate')
+    ax1.set_title('Win Rate by Z-Score Bucket')
+    ax1.set_ylabel('Win Rate')
+    ax1.set_xlabel('Z-Score Range')
+    ax1.legend()
+
+    avg_pnls = [b['avg_pnl'] for b in bucket_stats]
+    colors = ['green' if p > 0 else 'red' for p in avg_pnls]
+    ax2.bar(ranges, avg_pnls, color=colors)
+    ax2.axhline(y=0, color='black', linestyle='-', alpha=0.5)
+    ax2.set_title('Average P&L by Z-Score Bucket')
+    ax2.set_ylabel('Average P&L ($)')
+    ax2.set_xlabel('Z-Score Range')
+
+    plt.tight_layout()
+    plt.savefig(f'{output_dir}signal_quality.png')
     plt.close()
